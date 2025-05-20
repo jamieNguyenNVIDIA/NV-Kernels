@@ -1386,10 +1386,9 @@ void mt7925_scan_work(struct work_struct *work)
 				if (!is_valid_alpha2(evt->alpha2))
 					break;
 
-				if (mdev->alpha2[0] != '0' && mdev->alpha2[1] != '0')
+				if (!memcmp(mdev->alpha2, evt->alpha2, 2))
 					break;
 
-				wiphy->regulatory_flags |= REGULATORY_COUNTRY_IE_IGNORE;
 				regulatory_hint(wiphy, evt->alpha2);
 
 				break;
