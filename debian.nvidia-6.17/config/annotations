@@ -102,6 +102,18 @@ CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL           note<'LP: #2028576: Perf governo
 CONFIG_CXL_MEM_RAW_COMMANDS                     policy<{'amd64': 'n', 'arm64': 'y'}>
 CONFIG_CXL_MEM_RAW_COMMANDS                     note<'Enable CXL raw commands for memory devices'>
 
+CONFIG_DEBUG_KMEMLEAK                           policy<{'amd64': 'y', 'arm64': 'y'}>
+CONFIG_DEBUG_KMEMLEAK                           note<'Enable kmemleak for memory leak debugging'>
+
+CONFIG_DEBUG_KMEMLEAK_AUTO_SCAN                 policy<{'amd64': 'y', 'arm64': 'y'}>
+CONFIG_DEBUG_KMEMLEAK_AUTO_SCAN                 note<'Enable kmemleak for memory leak debugging'>
+
+CONFIG_DEBUG_KMEMLEAK_DEFAULT_OFF               policy<{'amd64': 'n', 'arm64': 'n'}>
+CONFIG_DEBUG_KMEMLEAK_DEFAULT_OFF               note<'Enable kmemleak for memory leak debugging'>
+
+CONFIG_DEBUG_KMEMLEAK_MEM_POOL_SIZE             policy<{'amd64': '16000', 'arm64': '16000'}>
+CONFIG_DEBUG_KMEMLEAK_MEM_POOL_SIZE             note<'Enable kmemleak for memory leak debugging'>
+
 CONFIG_DRM_NOUVEAU                              policy<{'amd64': 'n', 'arm64': 'n'}>
 CONFIG_DRM_NOUVEAU                              note<'Disable nouveau for NVIDIA kernels'>
 
@@ -186,6 +198,9 @@ CONFIG_RUST                                     note<'Make sure this remains ena
 CONFIG_SAMPLE_CORESIGHT_SYSCFG                  policy<{'arm64': 'n'}>
 CONFIG_SAMPLE_CORESIGHT_SYSCFG                  note<'Required for Grace enablement'>
 
+CONFIG_SAMPLE_KMEMLEAK                          policy<{'amd64': 'n', 'arm64': 'n'}>
+CONFIG_SAMPLE_KMEMLEAK                          note<'Enable kmemleak for memory leak debugging'>
+
 CONFIG_SENSORS_AAEON                            policy<{'amd64': '-'}>
 CONFIG_SENSORS_AAEON                            note<'Disable all Ubuntu ODM drivers'>
 
@@ -268,6 +283,7 @@ CONFIG_RUST_FW_LOADER_ABSTRACTIONS              policy<{'amd64': '-', 'arm64': '
 CONFIG_RUST_OVERFLOW_CHECKS                     policy<{'amd64': '-', 'arm64': '-'}>
 CONFIG_RUST_PHYLIB_ABSTRACTIONS                 policy<{'amd64': '-', 'arm64': '-'}>
 CONFIG_SAMPLES_RUST                             policy<{'amd64': '-', 'arm64': '-'}>
+CONFIG_STACKDEPOT_ALWAYS_INIT                   policy<{'amd64': 'y', 'arm64': 'y'}>
 CONFIG_TCG_ARM_CRB_FFA                          policy<{'arm64': 'y'}>
 CONFIG_TOOLS_SUPPORT_RELR                       policy<{'amd64': 'y', 'arm64': '-'}>
 CONFIG_UCSI_HUAWEI_GAOKUN                       policy<{'arm64': '-'}>
