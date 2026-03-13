@@ -1,4 +1,4 @@
-linux-nvidia-6.17 (6.17.0-1011.11) noble; urgency=medium
+linux-nvidia-6.17 (6.17.0-1111.kmemleak) noble; urgency=medium
 
   * noble/linux-nvidia-6.17: 6.17.0-1011.11 -proposed tracker (LP: #2141777)
 
