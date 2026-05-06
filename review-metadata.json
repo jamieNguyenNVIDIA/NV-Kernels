@@ -1,0 +1,8 @@
+{
+  "author": "Richard Cheng <icheng@nvidia.com>",
+  "sha": "32dd95c9f8ed02c3925657ccd6cb87c5859991a7",
+  "subject": "fwctl: Fix class init ordering to avoid NULL pointer dereference on device removal",
+  "issues-found": 0,
+  "issue-severity-score": "none",
+  "issue-severity-explanation": "none"
+}

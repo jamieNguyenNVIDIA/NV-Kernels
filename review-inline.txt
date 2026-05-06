@@ -1,0 +1,78 @@
+PR #387 review notes — NPEM hot-plug LED flag + fwctl init ordering (7.0-bos)
+
+Verdict: no regressions found.
+State:   PR was CLOSED on 2026-04-23 (merged manually by nvmochs after
+         APPROVED reviews from nirmoy and nvmochs; Acked-by clsotog).
+
+Two commits:
+
+  c00789ed8f63 PCI/NPEM: Set LED_HW_PLUGGABLE for hotplug-capable ports
+  32dd95c9f8ed fwctl: Fix class init ordering to avoid NULL pointer
+               dereference on device removal (deep-dived per review-core.md)
+
+Same commits landed on 26.04_linux-nvidia-bos as
+
+  beda472d4637 (PCI/NPEM)
+  53c2516d4e61 (fwctl)
+
+byte-for-byte identical to the PR head.
+
+
+Cherry-pick / backport audit (clean)
+====================================
+
+  PR sha           Upstream sha  In upstream/linux  Subject match  diff
+  -------------    ------------  -----------------  -------------  ----
+  c00789ed8f63     16d021c878dc        yes              yes          0
+  32dd95c9f8ed     a55f80233f38        yes              yes          0
+
+Both cherry-picks byte-for-byte identical to the upstream v7.1 commits.
+
+
+Top commit (32dd95c9f8ed)
+=========================
+
+REACHABILITY: confirmed. fwctl_init is the module init function for
+drivers/fwctl/main.c, run at boot.
+
+The change:
+
+  -module_init(fwctl_init);
+  +subsys_initcall(fwctl_init);
+
+This moves fwctl's class registration earlier in the boot sequence
+(subsys initcall, level 4) so it runs before regular module_init
+(level 6).
+
+The commit message identifies the NULL-deref scenario correctly:
+
+  - CXL is linked before fwctl in drivers/Makefile, so
+    cxl_pci_driver_init() runs before fwctl_init().
+  - cxl_pci_probe() calls fwctl_register() + device_add(). With
+    fwctl_class not yet registered, class_to_subsys() returns NULL
+    and knode_class is skipped.
+  - On device removal, class_to_subsys() now returns non-NULL (init
+    has run), so device_del() calls klist_del() on the uninitialized
+    knode -> NULL deref.
+
+Moving fwctl to subsys_initcall registers the class before CXL probes
+devices, eliminating the window. Fixes: 858ce2f56b52 ("cxl: Add FWCTL
+support to CXL"). Reviewed-by Dave Jiang and Kai-Heng Feng. Merged
+upstream as a55f80233f38 and into v7.1.
+
+
+Second commit (c00789ed8f63 — NPEM LED flag)
+============================================
+
+One-liner in pci_npem_set_led_classdev():
+
+  -	led->flags = 0;
+  +	led->flags = LED_HW_PLUGGABLE;
+
+Marks NPEM LEDs as on hot-pluggable hardware. Trivial; no regression
+surface. Reviewed-by Lukas Wunner, signed-off-by Bjorn Helgaas.
+Fixes: 4e893545ef87 ("PCI/NPEM: Add Native PCIe Enclosure Management
+support").
+
+No regressions.
+
