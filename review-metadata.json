@@ -1,0 +1,8 @@
+{
+  "author": "Breno Leitao <leitao@debian.org>",
+  "sha": "911b93df5e04cc3df681ad0790257d8fcfcec788",
+  "subject": "workqueue: validate cpumask_first() result in llc_populate_cpu_shard_id()",
+  "issues-found": 0,
+  "issue-severity-score": "none",
+  "issue-severity-explanation": "none"
+}
