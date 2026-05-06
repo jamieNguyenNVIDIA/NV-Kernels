@@ -1,0 +1,92 @@
+PR #393 review notes — workqueue: sharded cache affinity scope (7.0)
+
+Verdict: no regressions found.
+State:   PR was CLOSED on 2026-04-28 (merged manually by nvmochs after
+         Acked-by from jamieNguyenNVIDIA and nvmochs).
+
+Commits as posted on the PR (oldest first):
+
+  d74a1e04de2c workqueue: fix parse_affn_scope() prefix matching bug
+  67697a50f33b workqueue: fix typo in WQ_AFFN_SMT comment
+  6fbf46acf4c3 workqueue: add WQ_AFFN_CACHE_SHARD affinity scope
+  bdd970505bd1 workqueue: set WQ_AFFN_CACHE_SHARD as the default affinity
+               scope
+  34677d4d930f tools/workqueue: add CACHE_SHARD support to wq_dump.py
+  874e6472195f workqueue: add test_workqueue benchmark module
+  3a4a53441bf5 docs: workqueue: document WQ_AFFN_CACHE_SHARD affinity scope
+  a6a70ffab6d6 workqueue: avoid unguarded 64-bit division
+  e02c1ab1443e workqueue: validate cpumask_first() result in
+               llc_populate_cpu_shard_id() (deep-dived per review-core.md)
+
+Same commits landed on 26.04_linux-nvidia as
+
+  90658aa47edb 0b469383604b 21b13829f806 9800e35411ef 3eed1088ff86
+  06080a96c7d9 d8d0f6ff0a10 064a8d93b820 381e96ea6ad7
+
+byte-for-byte identical to the PR head (the SHA difference is just the
+re-cherry-pick onto the latest base).
+
+
+Cross-PR equivalence
+====================
+
+PR 393 is the sibling of PR #394 (same series, different base):
+
+  PR 393: 26.04_linux-nvidia      (7.0)
+  PR 394: 26.04_linux-nvidia-bos  (7.0-bos)
+
+I diffed the 9 PR-393 commits against the 9 PR-394 commits one-to-one:
+all byte-for-byte identical. Same upstream cherry-pick SHAs cited in
+both. The deep-dive performed on PR #394 applies verbatim here.
+
+
+Cherry-pick / backport audit (clean)
+====================================
+
+All nine commits cite "(cherry picked from commit <SHA>)". Every cited
+upstream SHA was looked up:
+
+  PR sha           Upstream sha  In upstream/linux  Subject match
+  -------------    ------------  -----------------  -------------
+  d74a1e04de2c     1abaae9b38a8        yes              yes
+  67697a50f33b     9dc42c907028        yes              yes
+  6fbf46acf4c3     5920d046f7ae        yes              yes
+  bdd970505bd1     4cdc8a7389d5        yes              yes
+  34677d4d930f     738390a5321c        yes              yes
+  874e6472195f     24b2e73f9700        yes              yes
+  3a4a53441bf5     41e3ccca00b3        yes              yes
+  a6a70ffab6d6     c6890f36fc49        yes              yes
+  e02c1ab1443e     76af54648899        yes              yes
+
+All upstream SHAs exist in mainline 7.1, every subject matches, every
+diff identical modulo line-number drift in hunk headers — no semantic
+edits during the cherry-picks.
+
+
+Top commit (e02c1ab1443e)
+=========================
+
+REACHABILITY: confirmed. precompute_cache_shard_ids() is __init and
+runs once during workqueue topology init at every boot, walking every
+LLC pod and calling llc_populate_cpu_shard_id() for each.
+
+The change adds a bounded-leader guard:
+
+    leader = cpumask_first(sibling_cpus);
+    if (WARN_ON_ONCE(leader >= nr_cpu_ids))
+            continue;
+    cpu_shard_id[c] = cpu_shard_id[leader];
+
+The commit message correctly identifies this as a -Warray-bounds
+false-positive suppressor that only manifests on UP configs (NR_CPUS=1
+makes cpu_shard_id[] a single-element int[1] and the compiler can't
+prove cpumask_first(sibling_cpus) is always 0). The invariant — c is
+in sibling_cpus, so cpumask_first() returns a valid CPU — holds; the
+WARN can never legitimately fire.
+
+If the WARN ever did fire, the "continue" leaves cpu_shard_id[c] at
+its zero-init value (the array is __initdata static), which would put
+that CPU in shard 0 — degraded but not unsafe.
+
+No regressions.
+
