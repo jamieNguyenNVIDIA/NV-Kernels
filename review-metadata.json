@@ -1,0 +1,8 @@
+{
+  "author": "Manish Honap <mhonap@nvidia.com>",
+  "sha": "1447b99bccc3f51adcf714e47d3461e9586fa308",
+  "subject": "NVIDIA: VR: SAUCE: vfio/cxl: Virtualize CXL DVSEC config writes",
+  "issues-found": 2,
+  "issue-severity-score": "medium",
+  "issue-severity-explanation": "DVSEC writefn drops bytes outside the matched 16-bit register and clobbers neighbouring bytes on sub-word writes; readfn returns hardware values for byte reads of virtualized registers, producing user-visible inconsistency between guest config-space accesses and the vconfig shadow."
+}

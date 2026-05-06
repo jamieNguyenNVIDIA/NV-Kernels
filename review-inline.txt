@@ -1,0 +1,229 @@
+PR #407 review notes — CXL VFIO Type-2 device passthrough series
+https://github.com/NVIDIA/NV-Kernels/pull/407
+
+The series touches a lot of new code (50 commits, ~3.6k LOC added).
+Most of it is upstream cherry-picks of Jason Gunthorpe's get_region_info
+refactor and Manish Honap's CXL Type-2 series.
+
+Two notes follow.  The first is a cherry-pick / backport audit (each
+referenced upstream sha was checked against linus's tree).  The second
+is a regression in the new DVSEC config handler.
+
+
+Cherry-pick / backport audit
+============================
+
+Twenty-five of the fifty commits cite an upstream sha via
+"(cherry picked from commit ...)" or "(backported from commit ...)".
+Each one was looked up in mainline:
+
+  - All twenty-five shas exist in linus's tree.
+  - All twenty-five subjects match the upstream commit subject byte-for-byte.
+  - For the cherry-picks the diffs match upstream modulo line-number /
+    blob-hash drift.  The single "backported from" entry
+    (vfio/hisi: Convert to the get_region_info op,
+     e238f147d517) is content-identical to upstream as well.
+
+Nineteen of the SAUCE patches reference Manish's v2 CXL Type-2 series
+posted at:
+
+  https://lore.kernel.org/linux-cxl/20260401143917.108413-1-mhonap@nvidia.com/
+
+That message-id corresponds to patch 1/20 of the v2 series and the URL
+resolves; the cited series is the right one.
+
+Six SAUCE patches (the CXL reset chain at the tail of the series) carry
+no upstream / lore reference at all:
+
+  9543998beea7 cxl: Export the CXL reset helpers for VFIO users
+  979f0aad4c42 vfio/pci: Wire CXL DPA reset handling
+  f5c8879ca425 vfio/cxl: Ensure PCI Memory Space is enabled before post-reset
+               BAR access
+  fcc7b7b52ef8 vfio/cxl: preserve HDM decoder base addresses across reset
+  d86286892ebd vfio/cxl: virtualize DVSEC STATUS2 register in vconfig shadow
+  acb85c3f4802 vfio/cxl: Implement vfio_cxl_reset()
+
+The pull-request description notes these come from Manish's internal
+RFC-v2 reset series that has not been posted upstream yet; that's
+consistent with the missing tags but it would be helpful to add a
+"Source: internal RFC-v2 [date]" line (or the eventual lore link once
+posted) to each commit so future bisects/backports have a reference.
+
+
+Regression: DVSEC writefn drops bytes outside the matched register
+==================================================================
+
+commit 1447b99bccc3f51adcf714e47d3461e9586fa308
+Author: Manish Honap <mhonap@nvidia.com>
+
+NVIDIA: VR: SAUCE: vfio/cxl: Virtualize CXL DVSEC config writes
+
+This patch installs a per-device DVSEC writefn/readfn that funnels
+DVSEC config space through the vdev->vconfig shadow.  The dispatcher
+keys on the start offset of each 16-bit DVSEC register, but only
+processes a single register per call regardless of the byte count
+that vfio_config_do_rw() passed in.
+
+Link: https://lore.kernel.org/linux-cxl/20260401143917.108413-1-mhonap@nvidia.com/
+
+> diff --git a/drivers/vfio/pci/cxl/vfio_cxl_config.c b/drivers/vfio/pci/cxl/vfio_cxl_config.c
+> new file mode 100644
+> --- /dev/null
+> +++ b/drivers/vfio/pci/cxl/vfio_cxl_config.c
+
+[ ... helpers and per-register write functions ... ]
+
+> +static int vfio_cxl_dvsec_writefn(struct vfio_pci_core_device *vdev,
+> +				  int pos, int count,
+> +				  struct perm_bits *perm,
+> +				  int offset, __le32 val)
+> +{
+> +	struct vfio_pci_cxl_state *cxl = vdev->cxl;
+> +	u16 dvsec = _cxlds_get_dvsec(vdev->cxl);
+> +	u16 abs_off = (u16)pos;
+> +	u16 dvsec_off;
+> +	u16 wval16;
+> +	u32 wval32;
+> +
+> +	if (!cxl || (u16)pos < dvsec ||
+> +	    (u16)pos >= dvsec + cxl->dvsec_len)
+> +		return vfio_raw_config_write(vdev, pos, count, perm,
+> +					     offset, val);
+> +
+> +	pci_dbg(vdev->pdev,
+> +		"vfio_cxl: DVSEC write: abs=0x%04x dvsec_off=0x%04x count=%d raw_val=0x%08x\n",
+> +		abs_off, abs_off - dvsec, count, le32_to_cpu(val));
+> +
+> +	dvsec_off = abs_off - dvsec;
+> +
+> +	/* Route to the appropriate per-register handler */
+> +	switch (dvsec_off) {
+> +	case CXL_DVSEC_CONTROL_OFFSET:
+> +		wval16 = (u16)le32_to_cpu(val);
+> +		cxl_dvsec_control_write(vdev, wval16);
+> +		break;
+> +	case CXL_DVSEC_STATUS_OFFSET:
+> +		wval16 = (u16)le32_to_cpu(val);
+> +		cxl_dvsec_status_write(vdev, wval16);
+> +		break;
+> +	case CXL_DVSEC_CONTROL2_OFFSET:
+> +		wval16 = (u16)le32_to_cpu(val);
+> +		cxl_dvsec_control2_write(vdev, wval16);
+> +		break;
+
+The switch is keyed on the start offset of each 16-bit register, and
+each arm casts val down to u16 and processes only that one register.
+But vfio_config_do_rw() (in drivers/vfio/pci/vfio_pci_config.c) hands
+this writefn whatever aligned chunk it was given — count can be 1, 2
+or 4:
+
+  count = min(count, vfio_pci_cap_remaining_dword(vdev, *ppos));
+  if (count >= 4 && !(*ppos % 4))
+          count = 4;
+  else if (count >= 2 && !(*ppos % 2))
+          count = 2;
+  else
+          count = 1;
+  ...
+  ret = perm->writefn(vdev, *ppos, count, perm, offset, val);
+
+vfio_pci_cap_remaining_dword() only stops when the cap_id changes, so
+it does not split a dword that spans two DVSEC registers.
+
+For a 4-byte write at dvsec+0x0c the writefn therefore sees pos=dvsec+0x0c
+and count=4, with val carrying the new CONTROL in the low 16 bits and
+the new STATUS in the high 16 bits.  The CONTROL_OFFSET arm runs
+cxl_dvsec_control_write() with the low half and returns count=4 — the
+STATUS half (which contains RW1C bits, e.g. VIRAL_STATUS) is silently
+dropped, but the caller is told the full dword was applied.  The same
+shape applies to dvsec+0x10 (CONTROL2 + STATUS2) and dvsec+0x14
+(LOCK + CAPABILITY3).
+
+Pre-patch, the default ecap perms passed the dword through
+vfio_raw_config_write(), so pre-patch writes to STATUS / STATUS2 worked
+even when the guest issued them as part of a 4-byte access.  Does the
+new dispatcher need to either split a count==4 case into the matched
+register plus its neighbor, or fall back to vfio_raw_config_write() for
+counts that don't match the matched register's natural width?
+
+In the count < 2 direction the same shape causes a different problem.
+Consider a guest pci_write_config_byte(dvsec+0x0c, x).  vfio's chunker
+makes count=1, and the writefn does:
+
+  case CXL_DVSEC_CONTROL_OFFSET:
+          wval16 = (u16)le32_to_cpu(val);
+          cxl_dvsec_control_write(vdev, wval16);
+
+cxl_dvsec_control_write() then unconditionally calls
+dvsec_virt_write16() against the CONTROL offset, which writes both
+bytes of CONTROL to vconfig — the high byte (P2P_MEM_ENABLE,
+VIRAL_ENABLE, plus RsvdP) is overwritten with zero even though the
+guest only asked to update the low byte.  Could this byte path read the
+existing 16-bit shadow value, modify only the requested byte, and write
+the merged value back — or fall through to vfio_raw_config_write() when
+count != 2?
+
+
+> +static int vfio_cxl_dvsec_readfn(struct vfio_pci_core_device *vdev,
+> +				 int pos, int count,
+> +				 struct perm_bits *perm,
+> +				 int offset, __le32 *val)
+> +{
+> +	struct vfio_pci_cxl_state *cxl = vdev->cxl;
+> +	u16 dvsec = _cxlds_get_dvsec(vdev->cxl);
+> +	u16 dvsec_off;
+> +
+> +	if (!cxl || (u16)pos < dvsec ||
+> +	    (u16)pos >= dvsec + cxl->dvsec_len)
+> +		return vfio_raw_config_read(vdev, pos, count, perm, offset, val);
+> +
+> +	dvsec_off = (u16)pos - dvsec;
+> +
+> +	switch (dvsec_off) {
+> +	case CXL_DVSEC_CONTROL_OFFSET:
+> +	case CXL_DVSEC_STATUS_OFFSET:
+> +	case CXL_DVSEC_CONTROL2_OFFSET:
+> +	case CXL_DVSEC_LOCK_OFFSET:
+> +		/* Return shadow vconfig value for virtualized registers */
+> +		memcpy(val, vdev->vconfig + pos, count);
+> +		return count;
+> +	default:
+> +		return vfio_raw_config_read(vdev, pos, count,
+> +					    perm, offset, val);
+> +	}
+> +}
+
+The read side has a related shape problem.  The switch matches only the
+start offset of each virtualized register, so a 1-byte read at
+dvsec+0x0d (the high byte of CONTROL) does not match any arm and falls
+through to vfio_raw_config_read() — which reads from hardware.  Byte 0
+of CONTROL comes from vconfig, byte 1 of the same register comes from
+hardware, and after a guest write the shadow and hardware can hold
+different values (cxl_dvsec_control_write() updates vconfig only).
+
+Should the readfn match every byte that lies inside a virtualized
+register, e.g. by checking dvsec_off against an inclusive [start, end)
+range for each register rather than equality with the start offset?
+
+
+Side note: 979f0aad4c42 -> f5c8879ca425
+=======================================
+
+Reading the reset chain in order, 979f0aad4c42 ("vfio/pci: Wire CXL DPA
+reset handling") wires vfio_cxl_finish_reset() into the FLR / reset
+ioctl paths and calls vfio_cxl_reinit_comp_regs(), which does
+readl(cxl->hdm_iobase + ...) on the post-reset BAR.  At that point of
+the series PCI_COMMAND.MEM may still be cleared (vfio_pci_ioctl_reset()
+goes through vfio_pci_zap_and_down_write_memory_lock(), not
+vfio_pci_memory_lock_and_enable(), and pci_try_reset_function() saves
+and restores PCI_COMMAND across FLR).  A guest that cleared MEM before
+issuing VFIO_DEVICE_RESET would cause that readl() to fire a UR which,
+on a system with DPC enabled, downs the link.
+
+The follow-on commit f5c8879ca425 ("vfio/cxl: Ensure PCI Memory Space
+is enabled before post-reset BAR access") fixes this by calling
+vfio_cxl_enable_memory_space() at the top of finish_reset, so the tip
+of the series is correct.  Would it be cleaner to fold f5c8879ca425
+into 979f0aad4c42 so no intermediate commit can boot a kernel that
+takes a DPC trip on the first guest-driven reset?
+
