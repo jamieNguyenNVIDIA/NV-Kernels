@@ -1,0 +1,8 @@
+{
+  "author": "Koba Ko <kobak@nvidia.com>",
+  "sha": "885cd42aac61a428fbe94d17efe0d2f3f3d5a898",
+  "subject": "NVIDIA: SAUCE: iommu/arm-smmu-v3: Use identity domain for ASPEED BMC devices",
+  "issues-found": 0,
+  "issue-severity-score": "none",
+  "issue-severity-explanation": "none"
+}

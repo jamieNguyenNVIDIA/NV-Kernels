@@ -1,0 +1,81 @@
+PR #391 review notes — iommu/arm-smmu-v3: ASPEED BMC identity domain (7.0)
+
+Verdict: no regressions found.
+State:   PR was CLOSED on 2026-04-28 (merged manually by nvmochs after
+         APPROVED reviews from nvmochs and clsotog).
+
+Single-commit PR:
+
+  885cd42aac61 NVIDIA: SAUCE: iommu/arm-smmu-v3: Use identity domain for
+               ASPEED BMC devices
+
+Same commit landed on 26.04_linux-nvidia as
+
+  8c17aae831de
+
+byte-for-byte identical to the PR head.
+
+
+Cross-PR equivalence
+====================
+
+PR 391 is the sibling of PR #392 (same patch, different base):
+
+  PR 391: 26.04_linux-nvidia      (7.0)
+  PR 392: 26.04_linux-nvidia-bos  (7.0-bos)
+
+I diffed PR 391 head 885cd42aac61 against PR 392 head 8c2d38a54cc6 —
+only line-number drift in hunk headers; the actual code change is
+identical. The deep-dive performed on PR #392 applies verbatim here.
+
+
+Backport audit (clean)
+======================
+
+Commit trailer: "(backported from commit
+738fff0e2060b6b383c21afdf1366330d9c79698 linux-nvidia-6.17)". Same
+source SHA as PR #392 — the original PR #371 patch on 6.17. SHA
+verified.
+
+The [koba: ...] rename note is the same as PR 392's. Verified that
+26.04_linux-nvidia (the 7.0 base for PR 391) has:
+
+  include/linux/pci.h:
+    PCI_DEV_FLAGS_PCI_BRIDGE_NO_ALIAS = (1 << 14)
+
+  drivers/pci/quirks.c:
+    quirk_aspeed_pci_bridge_no_alias() sets the singular flag for
+    PCI_VENDOR_ID_ASPEED, device 0x1150.
+
+So the new dev_flags check in the SMMU driver fires correctly.
+
+
+Top commit deep-dive
+====================
+
+REACHABILITY: confirmed. arm_smmu_def_domain_type is wired into
+arm_smmu_ops.def_domain_type, called by the IOMMU core for every
+PCI device on an ARM SMMUv3 system at probe.
+
+The new check inside the existing dev_is_pci(dev) branch:
+
+    if (pdev->bus->self &&
+        (pdev->bus->self->dev_flags &
+         PCI_DEV_FLAGS_PCI_BRIDGE_NO_ALIAS) &&
+        pdev->bus->self->vendor == PCI_VENDOR_ID_ASPEED &&
+        pdev->bus->self->device == 0x1150)
+            return IOMMU_DOMAIN_IDENTITY;
+
+  - pdev->bus is guaranteed non-NULL for any probed PCI device.
+  - pdev->bus->self is explicitly NULL-checked (NULL only on root bus).
+  - The vendor+device check is technically redundant given the AST1150
+    quirk is the only setter of PCI_BRIDGE_NO_ALIAS today, but
+    defensive in case another driver ever sets the same flag.
+  - Pattern is consistent with the existing HISI PTT and NVIDIA quirks
+    in the same function.
+
+No race, no leak, no UAF surface — purely a domain-type policy
+decision at probe time.
+
+No regressions.
+
