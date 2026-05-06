@@ -1,0 +1,8 @@
+{
+  "author": "K Prateek Nayak <kprateek.nayak@amd.com>",
+  "sha": "b3bf56e2a412f792fa6ac30cd871cfc9f27e5ba8",
+  "subject": "NVIDIA: SAUCE: sched/fair: Add SIS_UTIL support to select_idle_capacity()",
+  "issues-found": 0,
+  "issue-severity-score": "none",
+  "issue-severity-explanation": "none"
+}

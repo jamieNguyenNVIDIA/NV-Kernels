@@ -1,0 +1,118 @@
+PR #395 review notes — SMT-aware asym CPU capacity idle selection (6.17)
+
+Verdict: no regressions found.
+State:   PR was CLOSED on 2026-04-30 (merged manually by nvmochs after
+         Acked-by from clsotog, jamieNguyenNVIDIA, and nvmochs).
+
+Commits as posted on the PR:
+
+  9a87c418e16e sched/fair: Attach sched_domain_shared to sd_asym_cpucapacity
+  20f85dc0e99e sched/fair: Prefer fully-idle SMT cores in asym-capacity idle
+               selection
+  842b1195ebce sched/fair: Reject misfit pulls onto busy SMT siblings on
+               asym-capacity
+  b3bf56e2a412 sched/fair: Add SIS_UTIL support to select_idle_capacity()
+               (deep-dived per review-core.md)
+
+Same commits landed on 24.04_linux-nvidia-6.17-next as
+
+  49cc5de67c8c
+  f3ac33c0c4fe
+  0500b0b58f16
+  cc0874baf17d
+
+I diffed the merged versions against the PR head: byte-for-byte identical
+(only blob-hashes differ from the re-cherry-pick onto the latest base).
+
+Same patches also exist on PR #405 (linux-nvidia 7.0) and PR #406
+(7.0-bos). The four commits across the three PRs are content-identical
+modulo line-number drift, so the deep-dive performed on PR #406 applies
+verbatim here.
+
+
+REACHABILITY: confirmed
+=======================
+
+Path: select_task_rq_fair -> select_idle_sibling -> sched_asym_cpucap_active()
+branch -> select_idle_capacity(). Vera Rubin enables SD_ASYM_CPUCAPACITY
+via ACPI/CPPC.
+
+
+Top commit (SIS_UTIL)
+=====================
+
+The new SIS_UTIL block in select_idle_capacity() mirrors select_idle_cpu():
+nr = READ_ONCE(sd->shared->nr_idle_scan) + 1, early "return -1" for an
+overloaded LLC (nr==1), and an in-loop early exit gated by
+!prefers_idle_core so the bound only applies when not chasing fully-idle
+cores. The exit predicate
+
+    best_fits == ASYM_IDLE_CORE_UCLAMP_MISFIT (-4)
+
+is the lowest best_fits value that can be stored in the loop, since
+fully-fitting cores return immediately via "if (fits > 0 && preferred_core)
+return cpu;" — nothing better is achievable later in the scan.
+
+
+Concerns investigated and dismissed
+===================================
+
+1) nr_busy_cpus tracking on asym systems. Commit 1 makes
+set_cpu_sd_state_busy / set_cpu_sd_state_idle skip the atomic_inc /
+atomic_dec when sd->shared is NULL (asym claimed the shared object).
+That does leave nr_busy_cpus on the asym shared object stale, but
+nohz_balancer_kick() short-circuits to "goto unlock" on asym systems
+before reading nr_busy_cpus:
+
+    sd = rcu_dereference(per_cpu(sd_asym_cpucapacity, cpu));
+    if (sd) {
+        if (check_misfit_status(rq)) { ... }
+        /* Skip the LLC logic [...] */
+        goto unlock;
+    }
+
+So the stale counter is never consumed. The defensive NULL check only
+matters on the NUMA-overlapping-asym fallback where LLC owns the shared
+and the counter is maintained normally.
+
+2) Enum value collision. ASYM_IDLE_CORE_BIAS = -3 and
+ASYM_IDLE_CORE_COMPLETE_MISFIT = -3 share a value. This is intentional —
+the bias is applied via "fits += ASYM_IDLE_CORE_BIAS", and the post-bias
+mapping leaves preferred-core misfits comparable against thread-level
+fits. The "best_fits > ASYM_IDLE_CORE_BIAS" check at the tail of the
+function uses the bias as the documented threshold for "no preferred-core
+candidate found", which is consistent.
+
+3) Unbounded scan when prefers_idle_core is true. By design — the
+commit comment ("nr only limits the scan when not preferring an idle
+core") matches the implementation. Same shape as select_idle_cpu()'s
+has_idle_core path.
+
+
+6.17-specific note
+==================
+
+The PR description states upstream PATCH 1/6 (the rcu_dereference_all()
+switch) was deliberately skipped because 71fedc41c23b is not in the
+6.17 base. Confirmed — 71fedc41c23b is not an ancestor of
+24.04_linux-nvidia-6.17-next. The 6.17 select_idle_sibling already
+uses plain rcu_dereference(), and the wakeup paths reaching this code
+hold rcu_read_lock(), so the new sd->shared dereference in
+select_idle_capacity() is RCU-safe.
+
+
+Form note (not a regression)
+============================
+
+All four commit trailers cite the cover-letter lore URL
+
+  https://lore.kernel.org/all/20260428051720.3180182-1-arighi@nvidia.com
+
+which is patch 1/6 (the refactor that the PR description explicitly says
+is NOT backported). Per-patch URLs (...-3 through ...-6) would let
+future bisects / backport audits find the upstream patch each commit
+actually corresponds to. The "(cherry picked from <URL>)" syntax is
+non-standard for kernel commits — the convention is "cherry picked from
+commit <SHA>" — but that's only available once the upstream series
+merges (expected v7.2 per the PR description).
+
