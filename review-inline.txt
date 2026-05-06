@@ -1,0 +1,128 @@
+PR #388 review notes — Live Firmware Activation (LFA) v2 forward-port (7.0-bos)
+
+Verdict: no regressions found.
+State:   OPEN, Approved by clsotog and nvmochs.
+
+Series structure (13 commits):
+
+  - 3 mechanical reverts of v1 SAUCE patches in the base
+  - 8 patches forward-porting Andre Przywara's upstream v2 LFA series
+    (cover letter:
+     https://lore.kernel.org/all/20260317103336.1273582-1-andre.przywara@arm.com/)
+  - 2 NVIDIA-original additions on top:
+      01cd0f8e97bf  handle LFA_BUSY on PRIME and ACTIVATE
+                    (Vedashree Vidwans / Nirmoy Das, per DEN0147 §2.5/§2.6)
+      772ce13332c6  emit uevent on inventory updates (Nirmoy Das)
+                    [top commit, deep-dived]
+
+
+Reverts (clean)
+===============
+
+  a35a50125d09 reverts f1ad1da2ead9 ("smccc: register as platform driver")
+  db87af122018 reverts e7616bcae74b ("smccc: add timeout, touch wdt")
+  b02fd80fb04f reverts dc371707478752 ("smccc: add support for LFA")
+
+Each reverted SHA exists in 26.04_linux-nvidia-bos base. Compared each
+revert against -R of the original; only difference is the a/b path
+swap that diff -R produces. The reverts are mechanical inversions.
+
+
+Cherry-pick / backport audit (clean)
+====================================
+
+  4ff148a79d16  dt-bindings: Add LFA binding
+  4c1ae5f56ba5  smccc: Add support for LFA
+  c2dcbefe0a78  lfa: Move image rescanning
+  0e06ba25fad2  lfa: Add timeout and trigger watchdog
+  252ab06874f9  lfa: Register ACPI notification
+  c31a18579709  lfa: Add auto_activate sysfs file
+  584d5308e16b  lfa: Register DT interrupt
+  1ca69bf55020  lfa: introduce SMC access lock
+
+All eight cite "(backported from <cover-letter URL>)" of Andre
+Przywara's v2 series. Cover-letter URL is acceptable for backports of
+a not-yet-merged upstream series; per-patch URLs would let bisects /
+backport audits find each individual upstream patch, but this is form
+quality, not a bug.
+
+The 2 NVIDIA-original additions (01cd0f8e97bf, 772ce13332c6) carry no
+upstream reference, which is appropriate.
+
+
+Top commit deep-dive (772ce13332c6)
+===================================
+
+The change:
+
+  /* moved up so remove_invalid_fw_images can reference it */
+  static struct faux_device *lfa_dev;
+  ...
+  static void remove_invalid_fw_images(struct work_struct *work)
+  {
+      /* ... existing image-deletion loop ... */
+
+      if (lfa_dev) {
+          int ret = kobject_uevent(&lfa_dev->dev.kobj, KOBJ_CHANGE);
+          if (ret)
+              pr_warn("failed to send firmware inventory change uevent: %d\n", ret);
+      }
+  }
+
+REACHABILITY: confirmed. remove_invalid_fw_images runs from
+fw_images_update_wq whenever ACPI/DT notifications or activation
+completion call update_fw_images_tree().
+
+Lifecycle / NULL / UAF check:
+
+lfa_init() order:
+
+  alloc_workqueue
+  INIT_WORK(&fw_images_update_work, remove_invalid_fw_images)
+  kset_create_and_add
+  lfa_dev = faux_device_create("arm-lfa", ...)
+  init_rwsem(&smc_lock)
+  update_fw_images_tree()    <- first work queueing happens here
+
+So lfa_dev is set before the first work is queued. The "if (lfa_dev)"
+guard is defensive but never NULL in practice.
+
+lfa_exit() order:
+
+  flush_workqueue(fw_images_update_wq)
+  destroy_workqueue(fw_images_update_wq)
+  clean_fw_images_tree()
+  kset_unregister(lfa_kset)
+  faux_device_destroy(lfa_dev)
+
+The flush precedes destroy, so no in-flight work can dereference a
+dangling lfa_dev. No UAF surface.
+
+Side observation (not a regression for this commit): lfa_init() does
+not check the return value of faux_device_create(). If creation
+fails, lfa_dev is NULL and the new uevent path silently no-ops (the
+guard handles it). The pre-existing lfa_exit() will then call
+faux_device_destroy(NULL). That's a pre-existing issue introduced
+by an earlier patch in the series and is out of scope for the top
+commit's regression analysis.
+
+
+Other commits sampled
+=====================
+
+1ca69bf55020 (SMC access lock):
+  Adds struct rw_semaphore smc_lock. Reader lock around SMC calls
+  using a sequence ID (lfa_cancel, prime_fw_image); writer lock around
+  activation. The lock is dropped at every "goto retry" loop boundary
+  in activate_fw_image so retries cannot self-deadlock.
+
+01cd0f8e97bf (LFA_BUSY handling):
+  Retry loop in activate_fw_image bounded by
+  ktime_before(ktime_get(), end), mirroring the existing
+  CALL_AGAIN pattern. Falls through to -LFA_TIMED_OUT after the
+  budget. prime_fw_image returns LFA_BUSY immediately with a
+  pr_warn (DEN0147 §2.5: concurrent PRIME shouldn't happen).
+  No infinite-loop surface.
+
+No regressions.
+

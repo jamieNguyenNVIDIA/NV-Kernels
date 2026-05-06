@@ -1,0 +1,8 @@
+{
+  "author": "Nirmoy Das <nirmoyd@nvidia.com>",
+  "sha": "772ce13332c644c76b102db45a03546450190b2c",
+  "subject": "NVIDIA: VR: SAUCE: firmware: smccc: lfa: Emit a uevent on inventory updates",
+  "issues-found": 0,
+  "issue-severity-score": "none",
+  "issue-severity-explanation": "none"
+}
