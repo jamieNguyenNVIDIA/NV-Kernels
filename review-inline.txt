@@ -1,0 +1,83 @@
+PR #390 review notes — iommu/arm-smmu-v3: DGX Spark iGPU device ID range (6.17)
+
+Verdict: no regressions found.
+State:   PR was CLOSED on 2026-04-28 (merged manually by nvmochs after
+         Acked-by exchange between abhsahu, jamieNguyenNVIDIA, and nvmochs).
+         Sibling PRs #396 (7.0) and #397 (7.0-bos).
+
+Single-commit PR:
+
+  5aaf623af2f3 NVIDIA: SAUCE: iommu/arm-smmu-v3: Use device ID range for
+               DGX Spark iGPU iommu quirk
+
+Same commit landed on 24.04_linux-nvidia-6.17-next as
+
+  b406505feaa1
+
+byte-for-byte identical to the PR head (only line-number drift in the
+hunk header).
+
+
+The change
+==========
+
+Inside arm_smmu_def_domain_type, replaces:
+
+    if (pdev->vendor == PCI_VENDOR_ID_NVIDIA &&
+        (pdev->device == 0x2E12 || pdev->device == 0x2E2A ||
+         pdev->device == 0x2E2B))
+            return IOMMU_DOMAIN_DMA;
+
+with:
+
+    if (pdev->vendor == PCI_VENDOR_ID_NVIDIA &&
+        pdev->device >= 0x2E00 && pdev->device <= 0x2E3F)
+            return IOMMU_DOMAIN_DMA;
+
+
+Range correctness
+=================
+
+All three originally listed IDs (0x2E12, 0x2E2A, 0x2E2B) fall inside
+[0x2E00, 0x2E3F] — no behavioral change for currently-shipping silicon.
+
+
+Collision check
+===============
+
+Searched the kernel tree for any other NVIDIA device ID references in
+0x2E00–0x2E3F:
+
+  - The only kernel-side reference to PCI_VENDOR_ID_NVIDIA combined
+    with IDs in this range is this SMMU quirk itself.
+  - Other vendors (Intel AGP, OMAP, IMX) do define IDs in the same
+    numeric range, but the quirk is gated by
+    vendor == PCI_VENDOR_ID_NVIDIA (0x10de) and won't match them.
+
+So no current NVIDIA device gets pulled into the DMA-domain quirk
+unintentionally; the 64-ID expansion only affects future DGX Spark
+iGPU SKUs that NVIDIA owns.
+
+
+Reachability
+============
+
+arm_smmu_def_domain_type is wired into arm_smmu_ops.def_domain_type,
+called by the IOMMU core for every PCI device on an ARM SMMUv3 system
+at probe. No NULL-deref surface (pdev is always non-NULL after the
+dev_is_pci(dev) gate).
+
+
+Form note
+=========
+
+The commit message references prior commits as
+
+  commit ab858638d96a ("NVIDIA: SAUCE: iommu/arm-smmu-v3: ...")
+  commit 8dc61abaa2eb ("NVIDIA: SAUCE: iommu/arm-smmu-v3: ...")
+
+checkpatch flagged the missing "subject" form on the original posting
+in PR comments; abhsahu fixed it before merge per the thread.
+
+No regressions.
+

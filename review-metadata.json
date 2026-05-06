@@ -1,0 +1,8 @@
+{
+  "author": "Abhishek Sahu <abhsahu@nvidia.com>",
+  "sha": "5aaf623af2f34ca30ed81da1d9cc3d2aca78a102",
+  "subject": "NVIDIA: SAUCE: iommu/arm-smmu-v3: Use device ID range for DGX Spark iGPU iommu quirk",
+  "issues-found": 0,
+  "issue-severity-score": "none",
+  "issue-severity-explanation": "none"
+}
