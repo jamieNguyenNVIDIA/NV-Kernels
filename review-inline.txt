@@ -1,0 +1,102 @@
+PR #406 review notes — SMT-aware asym CPU capacity idle selection
+
+Verdict: no regressions found.
+
+Commits reviewed:
+
+  477d21ff0ca2 sched/fair: Attach sched_domain_shared to sd_asym_cpucapacity
+  398ceda457e2 sched/fair: Reject misfit pulls onto busy SMT siblings on
+               asym-capacity
+  37bc40b126f5 sched/fair: Prefer fully-idle SMT cores in asym-capacity idle
+               selection
+  3bbc958d6e82 sched/fair: Add SIS_UTIL support to select_idle_capacity()
+               (deep-dived per review-core.md)
+
+REACHABILITY: confirmed. Wakeup path
+select_task_rq_fair -> select_idle_sibling -> sched_asym_cpucap_active()
+branch -> select_idle_capacity(). Vera Rubin enables SD_ASYM_CPUCAPACITY
+via ACPI/CPPC.
+
+
+Top commit (SIS_UTIL)
+=====================
+
+The new SIS_UTIL block in select_idle_capacity() mirrors the established
+select_idle_cpu() pattern: nr = READ_ONCE(sd->shared->nr_idle_scan) + 1,
+early return -1 for an overloaded LLC (nr==1), and an in-loop early exit
+gated by !prefers_idle_core so the bound only applies when not chasing
+fully-idle cores. The exit predicate
+best_fits == ASYM_IDLE_CORE_UCLAMP_MISFIT (-4) is the lowest best_fits
+value that can be stored, since fully-fitting cores return immediately
+via the early "if (fits > 0 && preferred_core) return cpu;" path —
+nothing better is achievable later in the scan.
+
+sd->shared is properly NULL-guarded for the NUMA-overlapping asym
+fallback path documented in commit 1.
+
+
+Concerns investigated and dismissed
+===================================
+
+1) nr_busy_cpus tracking on asym systems. Commit 1 makes
+set_cpu_sd_state_busy / set_cpu_sd_state_idle skip the atomic_inc /
+atomic_dec when sd->shared is NULL (asym claimed the shared object).
+That does leave nr_busy_cpus on the asym shared object stale, but
+nohz_balancer_kick() short-circuits to "goto unlock" on asym systems
+before reading nr_busy_cpus:
+
+    sd = rcu_dereference_all(per_cpu(sd_asym_cpucapacity, cpu));
+    if (sd) {
+        if (check_misfit_status(rq)) { ... }
+        /*
+         * For asymmetric systems, we do not want to nicely balance
+         * cache use [...] Skip the LLC logic [...]
+         */
+        goto unlock;
+    }
+
+So the stale counter is never consumed. The defensive NULL check only
+matters on the NUMA-overlapping-asym fallback where LLC owns the shared
+and the counter is maintained normally.
+
+2) Enum value collision. ASYM_IDLE_CORE_BIAS = -3 and
+ASYM_IDLE_CORE_COMPLETE_MISFIT = -3 share a value. This is intentional
+— the bias is applied via "fits += ASYM_IDLE_CORE_BIAS", and the
+post-bias mapping leaves preferred-core misfits comparable against
+thread-level fits. The "best_fits > ASYM_IDLE_CORE_BIAS" check at the
+tail of the function uses the bias as the documented threshold for
+"no preferred-core candidate found", which is consistent.
+
+3) Unbounded scan when prefers_idle_core is true. By design — the
+commit comment ("nr only limits the scan when not preferring an idle
+core") matches the implementation. Same shape as select_idle_cpu()'s
+has_idle_core path.
+
+
+Form note (not a regression)
+============================
+
+All four commit trailers cite the same lore message-id
+
+  https://lore.kernel.org/all/20260428051720.3180182-1-arighi@nvidia.com
+
+which is patch 1/6 — the refactor the PR description says is NOT
+backported (it requires 71fedc41c23b "sched/fair: Switch to
+rcu_dereference_all()", already in the 7.0 base). Citing the specific
+sub-patch URLs (...-3 through ...-6) instead of the cover-letter URL
+would let future bisects / backport audits find the upstream patch
+each commit actually corresponds to.
+
+The "(cherry picked from <URL>)" syntax is non-standard for kernel
+commits — the convention is "cherry picked from commit <SHA>" — but
+that's only available once the upstream series merges (expected v7.2
+per the PR description).
+
+
+Cross-PR note
+=============
+
+The four commits are byte-for-byte identical to those on PR #405
+(linux-nvidia 7.0) and the linux-nvidia-6.17 backport at PR #395; only
+the base branch differs.
+
