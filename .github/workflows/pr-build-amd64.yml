@@ -1,0 +1,161 @@
+name: PR Build amd64
+
+# Compile a pull request for amd64, using the configuration the branch ships.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - 24.04_linux-nvidia-6.17-next
+      - 26.04_linux-nvidia-bos
+      - 26.04_linux-nvidia
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to build'
+        required: true
+        type: number
+
+# A full build runs for well over an hour, so never let a superseded push keep
+# a runner busy.
+concurrency:
+  group: pr-build-amd64-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+# pull_request_target hands out a token with write access to this repository
+# and this job compiles unreviewed pull request code. Keep the token read-only
+# and do not leave it on disk.
+permissions:
+  contents: read
+
+jobs:
+  build-amd64:
+    name: amd64 build
+    # A draft costs an hour of runner time per push for a signal nobody is
+    # acting on yet; ready_for_review starts the build.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Resolve PR number
+        id: pr
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            pr_number="$INPUT_PR_NUMBER"
+          else
+            pr_number="$PR_NUMBER"
+          fi
+          if [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid PR number metadata"
+            exit 1
+          fi
+          printf 'pr_number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
+
+      # Build the pull request head, which is what the downstream deb build
+      # reports on. refs/pull/N/head is present in this repository even when
+      # the pull request comes from a fork.
+      - name: Check out PR head
+        uses: actions/checkout@v6
+        with:
+          ref: refs/pull/${{ steps.pr.outputs.pr_number }}/head
+          fetch-depth: 1
+          persist-credentials: false
+
+      # A full nvidia config builds roughly 6700 modules; the stock runner
+      # image does not leave room for that.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache cpio dwarves flex kmod \
+            libelf-dev libssl-dev python3 rsync zstd
+
+      # Take the configuration from the branch's own annotations rather than a
+      # checked-in config file, so that a symbol a pull request newly enables
+      # is actually built. A checked-in config drops it silently: olddefconfig
+      # sets a bool it has never seen, and which has no default, to n.
+      - name: Generate the amd64 config from the branch annotations
+        run: |
+          set -eux
+          debian=$(awk -F= '/^DEBIAN=/ { print $2 }' debian/debian.env)
+          flavour=$(awk -F= '/^flavours/ { print $2 }' \
+                    "${debian}/rules.d/amd64.mk" | awk '{ print $1 }')
+          if [ -z "$debian" ] || [ -z "$flavour" ]; then
+            echo "::error::Could not determine the amd64 flavour for this branch"
+            exit 1
+          fi
+          python3 debian/scripts/misc/annotations \
+            -f "${debian}/config/annotations" \
+            --export --arch amd64 --flavour "amd64-${flavour}" > .config
+          make ARCH=x86_64 olddefconfig
+          cp .config .config.annotations
+          echo "DEBIAN=${debian}" >> "$GITHUB_ENV"
+          echo "FLAVOUR=amd64-${flavour}" >> "$GITHUB_ENV"
+
+      # Advisory only. This is the same check the real package build runs in
+      # stamp-prepare-%, but it also trips on toolchain version symbols that
+      # differ between this runner and the archive builders, so it must not be
+      # allowed to fail the compile gate.
+      - name: Check the config against the annotations (advisory)
+        continue-on-error: true
+        run: |
+          python3 debian/scripts/misc/annotations \
+            -f "${DEBIAN}/config/annotations" \
+            --arch amd64 --flavour "${FLAVOUR}" --check .config.annotations
+
+      - name: Trim the config for CI
+        run: |
+          set -eux
+          # debian/canonical-certs.pem and canonical-revoked-certs.pem are
+          # supplied by the packaging, not by the source tree, so the build
+          # cannot honour these settings here.
+          ./scripts/config --disable MODULE_SIG_ALL
+          ./scripts/config --set-str SYSTEM_TRUSTED_KEYS ''
+          ./scripts/config --set-str SYSTEM_REVOCATION_KEYS ''
+          ./scripts/config --set-str MODULE_SIG_KEY ''
+          # Debug information dominates both build time and disk footprint and
+          # contributes nothing to catching compile errors. DEBUG_INFO is a
+          # choice, so selecting NONE is not enough on its own: the member the
+          # branch already picked has to be cleared or olddefconfig keeps it.
+          for opt in DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
+                     DEBUG_INFO_DWARF4 DEBUG_INFO_DWARF5; do
+            ./scripts/config --disable "$opt"
+          done
+          ./scripts/config --enable DEBUG_INFO_NONE
+          make ARCH=x86_64 olddefconfig
+          # CONFIG_WERROR is deliberately left alone. scripts/Makefile.warn
+          # sets -Werror=implicit-function-declaration unconditionally, so
+          # implicit declarations fail the build either way.
+          if grep -q '^CONFIG_DEBUG_INFO=y' .config; then
+            echo "::error::Debug info is still enabled; the build will not fit"
+            exit 1
+          fi
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-amd64-${{ github.base_ref || 'dispatch' }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-amd64-${{ github.base_ref || 'dispatch' }}-
+            ccache-amd64-
+
+      - name: Build vmlinux and modules
+        run: |
+          set -eux
+          export PATH="/usr/lib/ccache:$PATH"
+          ccache --max-size=5G
+          ccache --zero-stats
+          make ARCH=x86_64 -j"$(nproc)" all
+          ccache --show-stats
